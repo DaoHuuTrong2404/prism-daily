@@ -10,9 +10,11 @@ menu.post("/post-create", async (c) => {
 	try {
 		const post = await createDailyPost();
 
+		const cleanId = post.id.replace(/^t3_/, "");
+
 		return c.json<UiResponse>(
 			{
-				navigateTo: `https://reddit.com/r/${context.subredditName}/comments/${post.id}`,
+				navigateTo: `https://www.reddit.com/r/${context.subredditName}/comments/${cleanId}/`,
 			},
 			200,
 		);

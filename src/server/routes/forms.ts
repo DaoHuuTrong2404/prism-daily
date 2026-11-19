@@ -23,9 +23,10 @@ forms.post("/date-submit", async (c) => {
 		}
 
 		const post = await createDailyPost(cleanDate);
+		const cleanId = post.id.replace(/^t3_/, "");
 		return c.json<UiResponse>(
 			{
-				navigateTo: `https://reddit.com/r/${context.subredditName}/comments/${post.id}`,
+				navigateTo: `https://www.reddit.com/r/${context.subredditName}/comments/${cleanId}/`,
 			},
 			200,
 		);
