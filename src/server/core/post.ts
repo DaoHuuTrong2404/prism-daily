@@ -17,8 +17,23 @@ export type PostMeta =
 			stage: PuzzleStage;
 	  };
 
+export type StoredCommunityPuzzle = {
+	postId: string;
+	url: string;
+	title: string;
+	author: string;
+	par: number;
+	size: 5 | 6;
+	createdAt: string;
+};
+
 export const postMetaKey = (postId: string): string =>
 	`prism:post:${postId}:meta`;
+
+export const dailyPostedKey = (dateKey: string): string =>
+	`prism:daily-posted:${dateKey}`;
+
+export const COMMUNITY_RECENT_KEY = "prism:community:recent";
 
 export const createDailyPost = async (requestedDate?: string) => {
 	const dateKey =
@@ -37,7 +52,10 @@ export const createDailyPost = async (requestedDate?: string) => {
 		mode: "daily",
 		dateKey,
 	};
-	await redis.set(postMetaKey(post.id), JSON.stringify(meta));
+	await Promise.all([
+		redis.set(postMetaKey(post.id), JSON.stringify(meta)),
+		redis.set(dailyPostedKey(dateKey), post.id),
+	]);
 	return post;
 };
 
@@ -54,13 +72,45 @@ export const createCustomPuzzlePost = async (params: {
 		title: `PRISM STUDIO: "${cleanTitle}" by u/${params.author} (Par ${params.stage.par})`,
 	});
 
+	const cleanId = post.id.replace(/^t3_/, "");
+	const url = `https://www.reddit.com/r/${subredditName}/comments/${cleanId}/`;
 	const meta: PostMeta = {
 		mode: "custom",
 		title: cleanTitle,
 		author: params.author,
 		stage: params.stage,
 	};
-	await redis.set(postMetaKey(post.id), JSON.stringify(meta));
+
+	// Persist post metadata and update recent community puzzle showcase index (capped to 12)
+	const existingRaw = await redis.get(COMMUNITY_RECENT_KEY);
+	let recent: StoredCommunityPuzzle[] = [];
+	if (existingRaw) {
+		try {
+			const parsed = JSON.parse(existingRaw) as StoredCommunityPuzzle[];
+			if (Array.isArray(parsed)) recent = parsed;
+		} catch {
+			recent = [];
+		}
+	}
+
+	const entry: StoredCommunityPuzzle = {
+		postId: post.id,
+		url,
+		title: cleanTitle,
+		author: params.author,
+		par: params.stage.par,
+		size: params.stage.size,
+		createdAt: new Date().toISOString(),
+	};
+	const nextRecent = [
+		entry,
+		...recent.filter((item) => item.postId !== post.id),
+	].slice(0, 12);
+
+	await Promise.all([
+		redis.set(postMetaKey(post.id), JSON.stringify(meta)),
+		redis.set(COMMUNITY_RECENT_KEY, JSON.stringify(nextRecent)),
+	]);
 	return post;
 };
 

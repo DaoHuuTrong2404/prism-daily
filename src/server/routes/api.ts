@@ -1,9 +1,12 @@
+import { context, reddit, redis, settings } from "@devvit/web/server";
 import { Hono } from "hono";
-import { context, reddit, redis } from "@devvit/web/server";
 import type {
 	ApiErrorResponse,
+	ArchiveDayStatus,
+	CommunityPuzzleSummary,
 	CompletedRunRecord,
 	GameInitResponse,
+	HallOfFameEntry,
 	LeaderboardEntry,
 	MoveDistribution,
 	PlayerProfile,
@@ -21,8 +24,14 @@ import {
 	getUtcDateKey,
 	shiftDateKey,
 	validateCustomPuzzle,
+	type StageResultSummary,
 } from "../../shared/prismEngine";
-import { createCustomPuzzlePost, readPostMeta } from "../core/post";
+import {
+	COMMUNITY_RECENT_KEY,
+	createCustomPuzzlePost,
+	readPostMeta,
+	type StoredCommunityPuzzle,
+} from "../core/post";
 
 export const api = new Hono();
 
@@ -32,7 +41,14 @@ const distKey = (scopeId: string): string => `prism:dist:${scopeId}`;
 const runKey = (scopeId: string, username: string): string =>
 	`prism:run:${scopeId}:${username}`;
 const profileKey = (username: string): string => `prism:profile:${username}`;
+const solvedDatesKey = (username: string): string => `prism:solved:${username}`;
 const avatarCacheKey = (username: string): string => `prism:avatar:${username}`;
+const pubLimitKey = (dateKey: string, username: string): string =>
+	`prism:publimit:${dateKey}:${username}`;
+
+const HOF_KEY = "prism:hof:alltime";
+const HOF_META_KEY = "prism:hof:meta";
+const MAX_DAILY_CUSTOM_POSTS = 5;
 
 type StoredLbMeta = {
 	totalTaps: number;
@@ -43,10 +59,29 @@ type StoredLbMeta = {
 	snoovatarUrl?: string;
 };
 
+type StoredHofMeta = {
+	parMasterCount: number;
+	totalSolved: number;
+	bestStreak: number;
+	snoovatarUrl?: string;
+};
+
 const parseNumber = (val: string | undefined, fallback = 0): number => {
 	if (!val) return fallback;
 	const parsed = Number.parseInt(val, 10);
 	return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const readBoolSetting = async (
+	name: string,
+	fallback: boolean,
+): Promise<boolean> => {
+	try {
+		const value = await settings.get<boolean>(name);
+		return typeof value === "boolean" ? value : fallback;
+	} catch {
+		return fallback;
+	}
 };
 
 const computeLbScore = (totalTaps: number, elapsedSec: number): number => {
@@ -55,10 +90,20 @@ const computeLbScore = (totalTaps: number, elapsedSec: number): number => {
 	return 10_000_000 - safeTaps * 100_000 - safeSec;
 };
 
+const computeHofScore = (
+	parMasterCount: number,
+	totalSolved: number,
+	bestStreak: number,
+): number => {
+	return parMasterCount * 10_000 + totalSolved * 100 + bestStreak;
+};
+
 const getCachedSnoovatar = async (
 	username: string,
 ): Promise<string | undefined> => {
-	if (!username || username === "anonymous") return undefined;
+	if (!username || username === "anonymous" || username === "Redditor") {
+		return undefined;
+	}
 	const cached = await redis.get(avatarCacheKey(username));
 	if (cached !== undefined) {
 		return cached || undefined;
@@ -90,6 +135,19 @@ const loadProfile = async (username: string): Promise<PlayerProfile> => {
 	if (snoovatarUrl) profile.snoovatarUrl = snoovatarUrl;
 	if (hash.lastPlayedDate) profile.lastPlayedDate = hash.lastPlayedDate;
 	return profile;
+};
+
+const loadSolvedDates = async (
+	username: string,
+): Promise<Record<string, ArchiveDayStatus>> => {
+	const raw = await redis.hGetAll(solvedDatesKey(username));
+	const map: Record<string, ArchiveDayStatus> = {};
+	for (const [k, v] of Object.entries(raw)) {
+		if (/^\d{4}-\d{2}-\d{2}$/.test(k) && (v === "par" || v === "solved")) {
+			map[k] = v;
+		}
+	}
+	return map;
 };
 
 const loadDistribution = async (scopeId: string): Promise<MoveDistribution> => {
@@ -152,6 +210,66 @@ const loadLeaderboard = async (
 	return { entries, totalSolvers };
 };
 
+const loadHallOfFame = async (limit = 15): Promise<HallOfFameEntry[]> => {
+	const topMembers = await redis.zRange(HOF_KEY, 0, limit - 1, {
+		by: "rank",
+		reverse: true,
+	});
+	if (topMembers.length === 0) return [];
+
+	const usernames = topMembers.map((m) => m.member);
+	const metaStrings = await redis.hMGet(HOF_META_KEY, usernames);
+
+	return topMembers.map((item, idx) => {
+		const rawMeta = metaStrings[idx];
+		let parsed: StoredHofMeta = {
+			parMasterCount: 0,
+			totalSolved: 1,
+			bestStreak: 1,
+		};
+		if (rawMeta) {
+			try {
+				parsed = JSON.parse(rawMeta) as StoredHofMeta;
+			} catch {
+				// defaults
+			}
+		}
+		const entry: HallOfFameEntry = {
+			rank: idx + 1,
+			username: item.member,
+			parMasterCount: parsed.parMasterCount,
+			totalSolved: parsed.totalSolved,
+			bestStreak: parsed.bestStreak,
+		};
+		if (parsed.snoovatarUrl) {
+			entry.snoovatarUrl = parsed.snoovatarUrl;
+		}
+		return entry;
+	});
+};
+
+const loadCommunityPuzzles = async (): Promise<CommunityPuzzleSummary[]> => {
+	const raw = await redis.get(COMMUNITY_RECENT_KEY);
+	if (!raw) return [];
+	let stored: StoredCommunityPuzzle[] = [];
+	try {
+		const parsed = JSON.parse(raw) as StoredCommunityPuzzle[];
+		if (Array.isArray(parsed)) stored = parsed.slice(0, 12);
+	} catch {
+		return [];
+	}
+	if (stored.length === 0) return [];
+
+	const solverCounts = await Promise.all(
+		stored.map((item) => redis.zCard(lbKey(`custom:${item.postId}`))),
+	);
+
+	return stored.map((item, idx) => ({
+		...item,
+		solvers: solverCounts[idx] ?? 0,
+	}));
+};
+
 const loadCompletion = async (
 	scopeId: string,
 	username: string,
@@ -185,9 +303,9 @@ api.get("/splash", async (c) => {
 		const scopeId =
 			meta.mode === "daily" ? `daily:${dateKey}` : `custom:${postId}`;
 
-		const [profileHash, totalSolvers, existingRun] = await Promise.all([
+		const [profileHash, lbPreview, existingRun] = await Promise.all([
 			redis.hGetAll(profileKey(username)),
-			redis.zCard(lbKey(scopeId)),
+			loadLeaderboard(scopeId, 1),
 			redis.get(runKey(scopeId, username)),
 		]);
 
@@ -203,10 +321,14 @@ api.get("/splash", async (c) => {
 			username,
 			subredditName: subredditName ?? "Devvit",
 			streak: parseNumber(profileHash.streak, 0),
-			totalSolvers,
+			totalSolvers: lbPreview.totalSolvers,
 			alreadySolved: Boolean(existingRun),
 			previewStage,
 		};
+
+		if (lbPreview.entries[0]) {
+			payload.topLeader = lbPreview.entries[0];
+		}
 
 		if (meta.mode === "custom") {
 			payload.customTitle = meta.title;
@@ -232,9 +354,10 @@ api.get("/init", async (c) => {
 
 	try {
 		const requestedDate = c.req.query("date");
-		const [meta, usernameRaw] = await Promise.all([
+		const [meta, usernameRaw, studioEnabled] = await Promise.all([
 			readPostMeta(postId),
 			reddit.getCurrentUsername(),
+			readBoolSetting("allowCommunityStudio", true),
 		]);
 		const username = usernameRaw ?? "Redditor";
 
@@ -256,13 +379,23 @@ api.get("/init", async (c) => {
 		const scopeId =
 			effectiveMode === "daily" ? `daily:${dateKey}` : `custom:${postId}`;
 
-		const [profile, todayCompletion, lbResult, distribution] =
-			await Promise.all([
-				loadProfile(username),
-				loadCompletion(scopeId, username),
-				loadLeaderboard(scopeId, 15),
-				loadDistribution(scopeId),
-			]);
+		const [
+			profile,
+			todayCompletion,
+			lbResult,
+			hallOfFame,
+			communityPuzzles,
+			solvedDates,
+			distribution,
+		] = await Promise.all([
+			loadProfile(username),
+			loadCompletion(scopeId, username),
+			loadLeaderboard(scopeId, 15),
+			loadHallOfFame(15),
+			loadCommunityPuzzles(),
+			loadSolvedDates(username),
+			loadDistribution(scopeId),
+		]);
 
 		const response: GameInitResponse = {
 			postId,
@@ -273,6 +406,10 @@ api.get("/init", async (c) => {
 			dailyPack,
 			profile,
 			leaderboard: lbResult.entries,
+			hallOfFame,
+			communityPuzzles,
+			solvedDates,
+			studioEnabled,
 			distribution,
 			totalSolvers: lbResult.totalSolvers,
 		};
@@ -307,22 +444,68 @@ api.post("/submit-run", async (c) => {
 
 	try {
 		const body = await c.req.json<SubmitRunRequest>();
-		const username = (await reddit.getCurrentUsername()) ?? "Redditor";
+		const [meta, usernameRaw, awardFlairs] = await Promise.all([
+			readPostMeta(postId),
+			reddit.getCurrentUsername(),
+			readBoolSetting("awardUserFlairs", true),
+		]);
+		const username = usernameRaw ?? "Redditor";
 		const dateKey =
 			body.dateKey && /^\d{4}-\d{2}-\d{2}$/.test(body.dateKey)
 				? body.dateKey
 				: getUtcDateKey();
 
-		const scopeId =
-			body.mode === "custom" ? `custom:${postId}` : `daily:${dateKey}`;
+		const isCustom = body.mode === "custom" && meta.mode === "custom";
+		const scopeId = isCustom ? `custom:${postId}` : `daily:${dateKey}`;
 
-		const totalTaps = Math.max(1, Math.min(999, Math.floor(body.totalTaps)));
-		const totalPar = Math.max(1, Math.min(999, Math.floor(body.totalPar)));
+		// Server-authoritative Par integrity verification (prevents forged sub-Par tap scores)
+		const authoritativeStages = isCustom
+			? [meta.stage]
+			: [...generateDailyPack(dateKey).stages];
+		const authoritativeTotalPar = authoritativeStages.reduce(
+			(sum, st) => sum + st.par,
+			0,
+		);
+
+		const sanitizedStageResults: StageResultSummary[] = authoritativeStages.map(
+			(st, idx) => {
+				const reported = Array.isArray(body.stageResults)
+					? body.stageResults[idx]
+					: undefined;
+				const taps = Math.max(
+					st.par,
+					Math.min(199, Math.floor(reported?.taps ?? st.par)),
+				);
+				const hintsUsed = Math.max(
+					0,
+					Math.min(30, Math.floor(reported?.hintsUsed ?? 0)),
+				);
+				const crystalCount = st.cells.filter(
+					(cell) => cell.kind === "crystal",
+				).length;
+				return {
+					stageNumber: st.stageNumber,
+					taps,
+					par: st.par,
+					crystals: crystalCount,
+					hintsUsed,
+				};
+			},
+		);
+
+		const totalPar = authoritativeTotalPar;
+		const totalTaps = Math.max(
+			totalPar,
+			sanitizedStageResults.reduce((acc, s) => acc + s.taps, 0),
+		);
+		const hintsUsed = sanitizedStageResults.reduce(
+			(acc, s) => acc + s.hintsUsed,
+			0,
+		);
 		const elapsedSec = Math.max(
 			1,
-			Math.min(86400, Math.floor(body.elapsedSec)),
+			Math.min(86_400, Math.floor(body.elapsedSec || 1)),
 		);
-		const hintsUsed = Math.max(0, Math.min(99, Math.floor(body.hintsUsed)));
 		const parMaster = totalTaps <= totalPar && hintsUsed === 0;
 
 		const existing = await loadCompletion(scopeId, username);
@@ -338,7 +521,7 @@ api.post("/submit-run", async (c) => {
 			nextTotalSolved += 1;
 			if (parMaster) nextParMaster += 1;
 
-			if (body.mode === "daily") {
+			if (!isCustom) {
 				const yesterday = shiftDateKey(dateKey, -1);
 				if (lastPlayedDate === yesterday) {
 					nextStreak = Math.max(1, nextStreak + 1);
@@ -360,7 +543,6 @@ api.post("/submit-run", async (c) => {
 			if (lastPlayedDate) {
 				profileUpdate.lastPlayedDate = lastPlayedDate;
 			}
-			await redis.hSet(profileKey(username), profileUpdate);
 
 			// Update move distribution histogram
 			const delta = totalTaps - totalPar;
@@ -372,9 +554,8 @@ api.post("/submit-run", async (c) => {
 						: delta <= 5
 							? "plus3To5"
 							: "plus6OrMore";
-			await redis.hIncrBy(distKey(scopeId), bucket, 1);
 
-			// Record leaderboard score (first official run counts for fairness)
+			// Record leaderboard & all-time Hall of Fame scores (first run counts for fairness)
 			const score = computeLbScore(totalTaps, elapsedSec);
 			const metaEntry: StoredLbMeta = {
 				totalTaps,
@@ -386,19 +567,51 @@ api.post("/submit-run", async (c) => {
 			if (profile.snoovatarUrl) {
 				metaEntry.snoovatarUrl = profile.snoovatarUrl;
 			}
-			await Promise.all([
+
+			const hofMeta: StoredHofMeta = {
+				parMasterCount: nextParMaster,
+				totalSolved: nextTotalSolved,
+				bestStreak: nextBest,
+			};
+			if (profile.snoovatarUrl) {
+				hofMeta.snoovatarUrl = profile.snoovatarUrl;
+			}
+
+			const writes: Promise<unknown>[] = [
+				redis.hSet(profileKey(username), profileUpdate),
+				redis.hIncrBy(distKey(scopeId), bucket, 1),
 				redis.zAdd(lbKey(scopeId), { member: username, score }),
 				redis.hSet(lbMetaKey(scopeId), {
 					[username]: JSON.stringify(metaEntry),
 				}),
-			]);
+				redis.zAdd(HOF_KEY, {
+					member: username,
+					score: computeHofScore(nextParMaster, nextTotalSolved, nextBest),
+				}),
+				redis.hSet(HOF_META_KEY, {
+					[username]: JSON.stringify(hofMeta),
+				}),
+			];
+
+			if (!isCustom) {
+				writes.push(
+					redis.hSet(solvedDatesKey(username), {
+						[dateKey]: parMaster ? "par" : "solved",
+					}),
+				);
+			}
+
+			await Promise.all(writes);
 		}
 
-		const [lbResult, distribution, ascRank] = await Promise.all([
-			loadLeaderboard(scopeId, 15),
-			loadDistribution(scopeId),
-			redis.zRank(lbKey(scopeId), username),
-		]);
+		const [lbResult, hallOfFame, solvedDates, distribution, ascRank] =
+			await Promise.all([
+				loadLeaderboard(scopeId, 15),
+				loadHallOfFame(15),
+				loadSolvedDates(username),
+				loadDistribution(scopeId),
+				redis.zRank(lbKey(scopeId), username),
+			]);
 
 		const totalSolvers = Math.max(1, lbResult.totalSolvers);
 		// zRank is 0-indexed ascending (lowest score = 0); convert to 1-indexed descending rank
@@ -423,7 +636,7 @@ api.post("/submit-run", async (c) => {
 			totalPar,
 			elapsedSec,
 			hintsUsed,
-			stageResults: body.stageResults,
+			stageResults: sanitizedStageResults,
 			rank,
 			percentile,
 			completedAt: new Date().toISOString(),
@@ -434,10 +647,11 @@ api.post("/submit-run", async (c) => {
 			await redis.set(runKey(scopeId, username), JSON.stringify(completion));
 		}
 
-		// Best-effort subreddit flair badge for Par Masters or 3+ day streaks
+		// Best-effort subreddit flair badge when mod setting allows
 		let flairAwarded: string | undefined;
 		if (
 			!existing &&
+			awardFlairs &&
 			subredditName &&
 			username !== "Redditor" &&
 			username !== "anonymous"
@@ -480,6 +694,8 @@ api.post("/submit-run", async (c) => {
 			completion,
 			profile: updatedProfile,
 			leaderboard: lbResult.entries,
+			hallOfFame,
+			solvedDates,
 			distribution,
 			totalSolvers: lbResult.totalSolvers,
 		};
@@ -551,8 +767,37 @@ api.post("/publish-puzzle", async (c) => {
 	}
 
 	try {
-		const body = await c.req.json<PublishPuzzleRequest>();
-		const username = (await reddit.getCurrentUsername()) ?? "Redditor";
+		const [studioEnabled, usernameRaw, body] = await Promise.all([
+			readBoolSetting("allowCommunityStudio", true),
+			reddit.getCurrentUsername(),
+			c.req.json<PublishPuzzleRequest>(),
+		]);
+
+		if (!studioEnabled) {
+			return c.json<ApiErrorResponse>(
+				{
+					status: "error",
+					message:
+						"Community Puzzle Studio is currently disabled by subreddit moderators.",
+				},
+				403,
+			);
+		}
+
+		const username = usernameRaw ?? "Redditor";
+		const todayKey = getUtcDateKey();
+		const limitKey = pubLimitKey(todayKey, username);
+		const publishedToday = parseNumber(await redis.get(limitKey), 0);
+		if (publishedToday >= MAX_DAILY_CUSTOM_POSTS) {
+			return c.json<ApiErrorResponse>(
+				{
+					status: "error",
+					message: `Daily limit reached (${MAX_DAILY_CUSTOM_POSTS} custom puzzles per UTC day).`,
+				},
+				429,
+			);
+		}
+
 		const check = validateCustomPuzzle(body.stage);
 		if (!check.valid || check.par === undefined) {
 			return c.json<ApiErrorResponse>(
@@ -577,10 +822,14 @@ api.post("/publish-puzzle", async (c) => {
 			stage: verifiedStage,
 		});
 
+		await redis.incrBy(limitKey, 1);
+		await redis.expire(limitKey, 26 * 60 * 60);
+
+		const cleanId = post.id.replace(/^t3_/, "");
 		return c.json<PublishPuzzleResponse>({
 			ok: true,
 			postId: post.id,
-			url: `https://www.reddit.com/r/${subredditName}/comments/${post.id}`,
+			url: `https://www.reddit.com/r/${subredditName}/comments/${cleanId}/`,
 		});
 	} catch (error) {
 		const msg =

@@ -21,6 +21,28 @@ export type LeaderboardEntry = {
 	parMaster: boolean;
 };
 
+export type HallOfFameEntry = {
+	rank: number;
+	username: string;
+	snoovatarUrl?: string;
+	parMasterCount: number;
+	totalSolved: number;
+	bestStreak: number;
+};
+
+export type CommunityPuzzleSummary = {
+	postId: string;
+	url: string;
+	title: string;
+	author: string;
+	par: number;
+	size: 5 | 6;
+	solvers: number;
+	createdAt: string;
+};
+
+export type ArchiveDayStatus = "par" | "solved";
+
 export type MoveDistribution = {
 	parOrBetter: number;
 	plus1To2: number;
@@ -53,6 +75,7 @@ export type SplashResponse = {
 	streak: number;
 	totalSolvers: number;
 	alreadySolved: boolean;
+	topLeader?: LeaderboardEntry;
 	previewStage: PuzzleStage;
 };
 
@@ -71,6 +94,10 @@ export type GameInitResponse = {
 	profile: PlayerProfile;
 	todayCompletion?: CompletedRunRecord;
 	leaderboard: LeaderboardEntry[];
+	hallOfFame: HallOfFameEntry[];
+	communityPuzzles: CommunityPuzzleSummary[];
+	solvedDates: Record<string, ArchiveDayStatus>;
+	studioEnabled: boolean;
 	distribution: MoveDistribution;
 	totalSolvers: number;
 };
@@ -90,6 +117,8 @@ export type SubmitRunResponse = {
 	completion: CompletedRunRecord;
 	profile: PlayerProfile;
 	leaderboard: LeaderboardEntry[];
+	hallOfFame: HallOfFameEntry[];
+	solvedDates: Record<string, ArchiveDayStatus>;
 	distribution: MoveDistribution;
 	totalSolvers: number;
 	flairAwarded?: string;

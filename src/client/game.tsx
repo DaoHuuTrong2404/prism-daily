@@ -1,12 +1,22 @@
 import "./index.css";
 
 import { showShareSheet, showToast } from "@devvit/web/client";
-import { StrictMode, useCallback, useEffect, useMemo, useState } from "react";
+import {
+	StrictMode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import type {
 	ApiErrorResponse,
+	ArchiveDayStatus,
+	CommunityPuzzleSummary,
 	CompletedRunRecord,
 	GameInitResponse,
+	HallOfFameEntry,
 	LeaderboardEntry,
 	MoveDistribution,
 	PlayerProfile,
@@ -32,16 +42,21 @@ import {
 import { ModalDialog } from "./components/ModalDialog";
 import { PrismBoard } from "./components/PrismBoard";
 import { StudioModal } from "./components/StudioModal";
+import { getNextUtcCountdown } from "./lib/countdown";
 import {
 	playCrystalChime,
 	playMirrorClick,
+	playPortalWarp,
 	playStageClearChord,
+	playUndoClick,
 } from "./lib/sound";
 
 type UndoItem = {
 	key: string;
 	prevOrientation: MirrorOrientation;
 };
+
+const LAUNCH_DATE = "2026-11-11";
 
 export const App = () => {
 	const todayUtc = useMemo(() => getUtcDateKey(), []);
@@ -67,6 +82,14 @@ export const App = () => {
 		parMasterCount: 0,
 	});
 	const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+	const [hallOfFame, setHallOfFame] = useState<HallOfFameEntry[]>([]);
+	const [communityPuzzles, setCommunityPuzzles] = useState<
+		CommunityPuzzleSummary[]
+	>([]);
+	const [solvedDates, setSolvedDates] = useState<
+		Record<string, ArchiveDayStatus>
+	>({});
+	const [studioEnabled, setStudioEnabled] = useState(true);
 	const [distribution, setDistribution] = useState<MoveDistribution>({
 		parOrBetter: 0,
 		plus1To2: 0,
@@ -86,19 +109,48 @@ export const App = () => {
 	const [stageHints, setStageHints] = useState(0);
 	const [stageResults, setStageResults] = useState<StageResultSummary[]>([]);
 	const [hintCellKey, setHintCellKey] = useState<string | null>(null);
+	const [burstKeys, setBurstKeys] = useState<string[]>([]);
 	const [elapsedSec, setElapsedSec] = useState(0);
 	const [timerRunning, setTimerRunning] = useState(false);
 	const [stageCleared, setStageCleared] = useState(false);
 	const [runFinished, setRunFinished] = useState(false);
 	const [submitting, setSubmitting] = useState(false);
 	const [sharingComment, setSharingComment] = useState(false);
+	const [countdown, setCountdown] = useState(() => getNextUtcCountdown());
 
 	// UI & modals
 	const [muted, setMuted] = useState(false);
 	const [showHelp, setShowHelp] = useState(false);
 	const [showLeaderboard, setShowLeaderboard] = useState(false);
+	const [lbTab, setLbTab] = useState<"daily" | "hof">("daily");
+	const [showArchive, setShowArchive] = useState(false);
 	const [showSummary, setShowSummary] = useState(false);
 	const [showStudio, setShowStudio] = useState(false);
+	const [studioTab, setStudioTab] = useState<"build" | "browse">("build");
+
+	const burstTimerRef = useRef<number | null>(null);
+
+	const triggerCrystalBursts = useCallback((coords: string[]) => {
+		if (coords.length === 0) return;
+		const stamp = Date.now();
+		const tokens = coords.map((k, i) => `${k}@${stamp}-${i}`);
+		setBurstKeys(tokens);
+		if (burstTimerRef.current !== null) {
+			window.clearTimeout(burstTimerRef.current);
+		}
+		burstTimerRef.current = window.setTimeout(() => {
+			setBurstKeys([]);
+			burstTimerRef.current = null;
+		}, 560);
+	}, []);
+
+	useEffect(() => {
+		return () => {
+			if (burstTimerRef.current !== null) {
+				window.clearTimeout(burstTimerRef.current);
+			}
+		};
+	}, []);
 
 	const loadGame = useCallback(async (dateOverride?: string) => {
 		try {
@@ -115,6 +167,10 @@ export const App = () => {
 			setDayNumber(data.dayNumber);
 			setProfile(data.profile);
 			setLeaderboard(data.leaderboard);
+			setHallOfFame(data.hallOfFame ?? []);
+			setCommunityPuzzles(data.communityPuzzles ?? []);
+			setSolvedDates(data.solvedDates ?? {});
+			setStudioEnabled(data.studioEnabled ?? true);
 			setDistribution(data.distribution);
 			setTotalSolvers(data.totalSolvers);
 
@@ -139,6 +195,7 @@ export const App = () => {
 				setStageHints(0);
 				setStageResults([]);
 				setHintCellKey(null);
+				setBurstKeys([]);
 				setStageCleared(false);
 			}
 
@@ -170,6 +227,7 @@ export const App = () => {
 			setStageHints(0);
 			setStageResults([]);
 			setHintCellKey(null);
+			setBurstKeys([]);
 			setStageCleared(false);
 			setRunFinished(false);
 			setElapsedSec(0);
@@ -202,6 +260,14 @@ export const App = () => {
 		return () => window.clearInterval(id);
 	}, [timerRunning, runFinished, loading]);
 
+	// Live UTC countdown clock
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			setCountdown(getNextUtcCountdown());
+		}, 1000);
+		return () => window.clearInterval(id);
+	}, []);
+
 	const activeStage: PuzzleStage =
 		stages[stageIdx] ?? stages[0] ?? generateDailyPack(todayUtc).stages[0];
 
@@ -209,6 +275,51 @@ export const App = () => {
 		() => traceBeam(activeStage, orientations),
 		[activeStage, orientations],
 	);
+
+	// Zero-text contextual first-tap onboarding for brand-new players on Stage 1
+	const onboardCellKey = useMemo(() => {
+		if (
+			loading ||
+			stageCleared ||
+			stageIdx !== 0 ||
+			stageTaps > 0 ||
+			completion !== null ||
+			profile.totalSolved > 0 ||
+			hintCellKey !== null
+		) {
+			return null;
+		}
+		const opt = findOptimalSolution(activeStage, orientations);
+		const interactives = getInteractiveCells(activeStage);
+		const litSet = new Set(trace.litOptics);
+		// Prefer an optimal mirror currently hit by the laser so tap #1 bends the live beam immediately
+		if (opt.solvable && opt.winningMask !== null) {
+			for (let i = 0; i < interactives.length; i += 1) {
+				if ((opt.winningMask & (1 << i)) !== 0) {
+					const cell = interactives[i];
+					if (cell && litSet.has(cellKey(cell.r, cell.c))) {
+						return cellKey(cell.r, cell.c);
+					}
+				}
+			}
+			if (opt.nextFlipIndex !== null) {
+				const optCell = interactives[opt.nextFlipIndex];
+				if (optCell) return cellKey(optCell.r, optCell.c);
+			}
+		}
+		return trace.litOptics[0] ?? null;
+	}, [
+		loading,
+		stageCleared,
+		stageIdx,
+		stageTaps,
+		completion,
+		profile.totalSolved,
+		hintCellKey,
+		activeStage,
+		orientations,
+		trace.litOptics,
+	]);
 
 	const submitFinalRun = useCallback(
 		async (finalResults: StageResultSummary[]) => {
@@ -240,6 +351,8 @@ export const App = () => {
 				setCompletion(json.completion);
 				setProfile(json.profile);
 				setLeaderboard(json.leaderboard);
+				setHallOfFame(json.hallOfFame ?? []);
+				setSolvedDates(json.solvedDates ?? {});
 				setDistribution(json.distribution);
 				setTotalSolvers(json.totalSolvers);
 				if (json.flairAwarded) {
@@ -279,8 +392,10 @@ export const App = () => {
 		};
 
 		const nextTaps = stageTaps + 1;
-		const prevLitCount = trace.litCrystals.length;
+		const prevLitSet = new Set(trace.litCrystals);
+		const prevPortalActive = trace.portalActive;
 		const nextTrace = traceBeam(activeStage, nextOrientations);
+		const newlyLit = nextTrace.litCrystals.filter((ck) => !prevLitSet.has(ck));
 
 		setOrientations(nextOrientations);
 		setUndoStack((stack) => [
@@ -290,9 +405,15 @@ export const App = () => {
 		setStageTaps(nextTaps);
 		setHintCellKey(null);
 
+		if (newlyLit.length > 0) {
+			triggerCrystalBursts(newlyLit);
+		}
+
 		if (nextTrace.solved) {
 			const isLastStage = stageIdx >= stages.length - 1;
-			playStageClearChord(isLastStage, muted);
+			const isStagePar = nextTaps <= activeStage.par && stageHints === 0;
+			triggerCrystalBursts(nextTrace.litCrystals);
+			playStageClearChord(isLastStage, muted, isStagePar);
 			setStageCleared(true);
 
 			const summary: StageResultSummary = {
@@ -311,14 +432,19 @@ export const App = () => {
 				setRunFinished(true);
 				setShowSummary(true);
 			}
-		} else if (nextTrace.litCrystals.length > prevLitCount) {
+		} else if (nextTrace.portalActive && !prevPortalActive) {
+			playPortalWarp(muted);
+			if (newlyLit.length > 0) {
+				playCrystalChime(nextTrace.litCrystals.length, muted);
+			}
+		} else if (newlyLit.length > 0) {
 			playCrystalChime(nextTrace.litCrystals.length, muted);
 		} else {
 			playMirrorClick(muted);
 		}
 	};
 
-	const handleAdvanceStage = () => {
+	const handleAdvanceStage = useCallback(() => {
 		const nextIdx = stageIdx + 1;
 		const nextStage = stages[nextIdx];
 		if (!nextStage) return;
@@ -328,10 +454,11 @@ export const App = () => {
 		setStageTaps(0);
 		setStageHints(0);
 		setHintCellKey(null);
+		setBurstKeys([]);
 		setStageCleared(false);
-	};
+	}, [stageIdx, stages]);
 
-	const handleUndo = () => {
+	const handleUndo = useCallback(() => {
 		if (undoStack.length === 0 || stageCleared) return;
 		const last = undoStack[undoStack.length - 1];
 		if (!last) return;
@@ -339,19 +466,19 @@ export const App = () => {
 		setOrientations((prev) => ({ ...prev, [last.key]: last.prevOrientation }));
 		setStageTaps((t) => Math.max(0, t - 1));
 		setHintCellKey(null);
-		playMirrorClick(muted);
-	};
+		playUndoClick(muted);
+	}, [undoStack, stageCleared, muted]);
 
-	const handleResetStage = () => {
-		if (stageCleared) return;
+	const handleResetStage = useCallback(() => {
+		if (stageCleared || stageTaps === 0) return;
 		setOrientations(getInitialOrientations(activeStage));
 		setUndoStack([]);
 		setStageTaps(0);
 		setHintCellKey(null);
-		playMirrorClick(muted);
-	};
+		playUndoClick(muted);
+	}, [stageCleared, stageTaps, activeStage, muted]);
 
-	const handleSmartHint = () => {
+	const handleSmartHint = useCallback(() => {
 		if (stageCleared) return;
 		const opt = findOptimalSolution(activeStage, orientations);
 		if (!opt.solvable || opt.nextFlipIndex === null) {
@@ -359,12 +486,73 @@ export const App = () => {
 			return;
 		}
 		const interactives = getInteractiveCells(activeStage);
-		const target = interactives[opt.nextFlipIndex];
-		if (!target) return;
-		setHintCellKey(cellKey(target.r, target.c));
+		const litSet = new Set(trace.litOptics);
+		let chosen = interactives[opt.nextFlipIndex];
+		if (opt.winningMask !== null) {
+			for (let i = 0; i < interactives.length; i += 1) {
+				if ((opt.winningMask & (1 << i)) !== 0) {
+					const candidate = interactives[i];
+					if (candidate && litSet.has(cellKey(candidate.r, candidate.c))) {
+						chosen = candidate;
+						break;
+					}
+				}
+			}
+		}
+		if (!chosen) return;
+		setHintCellKey(cellKey(chosen.r, chosen.c));
 		setStageHints((h) => h + 1);
 		playCrystalChime(2, muted);
-	};
+	}, [stageCleared, activeStage, orientations, trace.litOptics, muted]);
+
+	// Desktop keyboard shortcuts (Z undo, R reset, H hint, M mute, Enter advance)
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent) => {
+			const anyModalOpen =
+				showHelp || showLeaderboard || showArchive || showSummary || showStudio;
+			if (anyModalOpen) return;
+			const targetTag = (e.target as HTMLElement | null)?.tagName;
+			if (targetTag === "INPUT" || targetTag === "TEXTAREA") return;
+			if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+			const key = e.key.toLowerCase();
+			if (key === "z") {
+				e.preventDefault();
+				handleUndo();
+			} else if (key === "r") {
+				e.preventDefault();
+				handleResetStage();
+			} else if (key === "h") {
+				e.preventDefault();
+				handleSmartHint();
+			} else if (key === "m") {
+				e.preventDefault();
+				setMuted((m) => !m);
+			} else if (
+				key === "enter" &&
+				stageCleared &&
+				stageIdx < stages.length - 1
+			) {
+				e.preventDefault();
+				handleAdvanceStage();
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [
+		showHelp,
+		showLeaderboard,
+		showArchive,
+		showSummary,
+		showStudio,
+		stageCleared,
+		stageIdx,
+		stages.length,
+		handleUndo,
+		handleResetStage,
+		handleSmartHint,
+		handleAdvanceStage,
+	]);
 
 	const handleReplayPractice = () => {
 		const first = stages[0];
@@ -377,17 +565,27 @@ export const App = () => {
 		setStageHints(0);
 		setStageResults([]);
 		setHintCellKey(null);
+		setBurstKeys([]);
 		setStageCleared(false);
 		setRunFinished(false);
 	};
 
-	const handleShiftArchiveDay = (delta: number) => {
-		const nextDate = shiftDateKey(selectedDate, delta);
-		if (nextDate > todayUtc) return;
-		if (nextDate < "2026-11-11") return;
+	const handleSelectArchiveDate = (dateKey: string) => {
+		if (dateKey > todayUtc || dateKey < LAUNCH_DATE) return;
+		setShowArchive(false);
 		setLoading(true);
-		void loadGame(nextDate);
+		void loadGame(dateKey);
 	};
+
+	const archiveDays = useMemo(() => {
+		const list: { dateKey: string; dayNumber: number }[] = [];
+		let cursor = todayUtc;
+		for (let i = 0; i < 60 && cursor >= LAUNCH_DATE; i += 1) {
+			list.push({ dateKey: cursor, dayNumber: getDayNumber(cursor) });
+			cursor = shiftDateKey(cursor, -1);
+		}
+		return list;
+	}, [todayUtc]);
 
 	const shareText = useMemo(() => {
 		const summary = completion;
@@ -471,13 +669,15 @@ export const App = () => {
 		return "plus6OrMore";
 	}, [completion]);
 
+	const topLeader = leaderboard[0];
+
 	return (
-		<div className="optical-bench-bg flex min-h-full w-full flex-col items-center px-3 py-3 text-slate-100">
-			<div className="flex w-full max-w-[440px] flex-1 flex-col gap-3">
+		<div className="optical-bench-bg flex min-h-full w-full flex-col items-center px-3 py-2.5 text-slate-100">
+			<div className="flex w-full max-w-[440px] flex-1 flex-col gap-2.5">
 				{/* Top Header */}
-				<header className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-slate-950/75 px-3 py-2 backdrop-blur">
+				<header className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/90 bg-slate-950/80 px-3 py-2 backdrop-blur">
 					<div className="min-w-0">
-						<div className="flex items-center gap-2">
+						<div className="flex items-center gap-1.5">
 							<span className="truncate text-sm font-black tracking-wide text-white">
 								{mode === "custom"
 									? `STUDIO: ${customMeta?.title ?? "Custom"}`
@@ -489,52 +689,46 @@ export const App = () => {
 								</span>
 							) : null}
 						</div>
-						<div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+						<div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
 							{mode === "daily" ? (
-								<>
-									<button
-										type="button"
-										aria-label="Previous day"
-										disabled={selectedDate <= "2026-11-11" || loading}
-										onClick={() => handleShiftArchiveDay(-1)}
-										className="cursor-pointer rounded px-1 text-slate-300 hover:bg-slate-800 disabled:opacity-30"
-									>
-										‹
-									</button>
-									<span className="tabular-nums">{selectedDate}</span>
-									<button
-										type="button"
-										aria-label="Next day"
-										disabled={selectedDate >= todayUtc || loading}
-										onClick={() => handleShiftArchiveDay(1)}
-										className="cursor-pointer rounded px-1 text-slate-300 hover:bg-slate-800 disabled:opacity-30"
-									>
-										›
-									</button>
-								</>
+								<button
+									type="button"
+									onClick={() => setShowArchive(true)}
+									aria-label="Open Daily Archive Calendar"
+									className="inline-flex min-h-7 cursor-pointer items-center gap-1 rounded-md border border-slate-800 bg-slate-900/90 px-2 py-0.5 text-[11px] font-medium text-slate-300 tabular-nums hover:border-sky-400/50 hover:text-sky-200"
+								>
+									<span>{selectedDate}</span>
+									<span className="text-[10px] text-sky-400">▾ Archive</span>
+								</button>
 							) : (
 								<span>by u/{customMeta?.author ?? "Redditor"}</span>
 							)}
 						</div>
 					</div>
 
-					{/* Action Icon Strip */}
+					{/* 44x44px Action Icon Strip */}
 					<div className="flex shrink-0 items-center gap-1">
 						<button
 							type="button"
-							onClick={() => setShowStudio(true)}
+							onClick={() => {
+								setStudioTab("build");
+								setShowStudio(true);
+							}}
 							aria-label="Open Community Puzzle Studio"
-							title="Create & Post Puzzle"
-							className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-sky-500/35 bg-sky-500/15 text-base font-bold text-sky-300 hover:bg-sky-500/25"
+							title="Community Puzzle Studio"
+							className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border border-sky-500/35 bg-sky-500/15 text-base font-bold text-sky-300 hover:bg-sky-500/25"
 						>
 							+
 						</button>
 						<button
 							type="button"
-							onClick={() => setShowLeaderboard(true)}
-							aria-label="Open Subreddit Leaderboard"
-							title="Leaderboard"
-							className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900 text-sm text-amber-300 hover:border-amber-400/50"
+							onClick={() => {
+								setLbTab("daily");
+								setShowLeaderboard(true);
+							}}
+							aria-label="Open Subreddit Leaderboard and Hall of Fame"
+							title="Leaderboard & Hall of Fame"
+							className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900 text-sm text-amber-300 hover:border-amber-400/50"
 						>
 							🏆
 						</button>
@@ -543,7 +737,7 @@ export const App = () => {
 							onClick={() => setShowHelp(true)}
 							aria-label="How to Play"
 							title="How to Play"
-							className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900 text-sm font-bold text-slate-200 hover:border-slate-500"
+							className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900 text-sm font-bold text-slate-200 hover:border-slate-500"
 						>
 							?
 						</button>
@@ -551,8 +745,8 @@ export const App = () => {
 							type="button"
 							onClick={() => setMuted((m) => !m)}
 							aria-label={muted ? "Unmute audio" : "Mute audio"}
-							title={muted ? "Unmute" : "Mute"}
-							className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900 text-sm text-slate-300 hover:border-slate-500"
+							title={muted ? "Unmute (M)" : "Mute (M)"}
+							className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border border-slate-700/80 bg-slate-900 text-sm text-slate-300 hover:border-slate-500"
 						>
 							{muted ? "🔇" : "🔊"}
 						</button>
@@ -590,7 +784,7 @@ export const App = () => {
 
 				{/* Telemetry HUD */}
 				<div className="grid grid-cols-3 gap-2">
-					<div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2 text-center">
+					<div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-1.5 text-center">
 						<div className="text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
 							Crystals
 						</div>
@@ -602,7 +796,7 @@ export const App = () => {
 							{trace.litCrystals.length} / {trace.totalCrystals}
 						</div>
 					</div>
-					<div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2 text-center">
+					<div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-1.5 text-center">
 						<div className="text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
 							Taps / Par
 						</div>
@@ -616,7 +810,7 @@ export const App = () => {
 							{stageTaps} / {activeStage.par}
 						</div>
 					</div>
-					<div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2 text-center">
+					<div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-1.5 text-center">
 						<div className="text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
 							Time
 						</div>
@@ -626,10 +820,26 @@ export const App = () => {
 					</div>
 				</div>
 
-				{/* Subtitle prompt */}
-				<p className="text-center text-xs text-slate-400">
-					{activeStage.subtitle}
-				</p>
+				{/* Contextual Subtitle OR Rival Target Banner */}
+				<div className="flex items-center justify-between gap-2 px-1 text-[11px]">
+					<p className="truncate text-slate-400">
+						{onboardCellKey
+							? "Tap the glowing mirror to rotate the laser beam"
+							: activeStage.subtitle}
+					</p>
+					{topLeader && !completion ? (
+						<button
+							type="button"
+							onClick={() => {
+								setLbTab("daily");
+								setShowLeaderboard(true);
+							}}
+							className="shrink-0 cursor-pointer rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-200 tabular-nums hover:bg-amber-500/20"
+						>
+							👑 #{topLeader.rank} {topLeader.totalTaps}t
+						</button>
+					) : null}
+				</div>
 
 				{/* Optical Bench Board */}
 				<div className="flex w-full justify-center">
@@ -644,6 +854,8 @@ export const App = () => {
 							trace={trace}
 							onCellTap={handleCellTap}
 							hintCellKey={hintCellKey}
+							onboardCellKey={onboardCellKey}
+							burstKeys={burstKeys}
 							interactive={!stageCleared}
 						/>
 					)}
@@ -651,7 +863,7 @@ export const App = () => {
 
 				{/* Stage Clear CTA OR Tactical Controls */}
 				{stageCleared ? (
-					<div className="flex flex-col items-center gap-2 rounded-xl border border-emerald-500/45 bg-emerald-950/40 p-3 text-center">
+					<div className="stage-clear-pop flex flex-col items-center gap-2 rounded-xl border border-emerald-500/45 bg-emerald-950/45 p-3 text-center">
 						<div className="text-sm font-extrabold text-emerald-300">
 							{stageTaps <= activeStage.par && stageHints === 0
 								? `★ PAR CLEAR! ${stageTaps}/${activeStage.par} taps`
@@ -711,10 +923,9 @@ export const App = () => {
 					<button
 						type="button"
 						onClick={() => setShowSummary(true)}
-						className="min-h-10 w-full cursor-pointer rounded-xl border border-sky-500/35 bg-sky-500/10 px-3 py-2 text-xs font-bold text-sky-300 hover:bg-sky-500/20"
+						className="min-h-11 w-full cursor-pointer rounded-xl border border-sky-500/35 bg-sky-500/10 px-3 py-2 text-xs font-bold text-sky-300 hover:bg-sky-500/20"
 					>
-						View My Saved Daily Scorecard (#{completion.rank} in r/
-						{subredditName})
+						View Saved Daily Scorecard (#{completion.rank} in r/{subredditName})
 					</button>
 				) : null}
 			</div>
@@ -730,7 +941,7 @@ export const App = () => {
 				onClose={() => setShowSummary(false)}
 			>
 				{completion ? (
-					<div className="flex flex-col gap-4">
+					<div className="flex flex-col gap-3.5">
 						<div className="grid grid-cols-4 gap-2 text-center">
 							<div className="rounded-lg border border-slate-800 bg-slate-900/80 p-2">
 								<div className="text-[10px] text-slate-400">TAPS</div>
@@ -806,6 +1017,16 @@ export const App = () => {
 							</div>
 						</div>
 
+						{/* Live countdown to next daily puzzle */}
+						{mode === "daily" ? (
+							<div className="flex items-center justify-between rounded-lg border border-slate-800/80 bg-slate-950/75 px-3 py-2 text-xs">
+								<span className="text-slate-400">Next Daily Beam (UTC)</span>
+								<span className="font-mono font-bold text-sky-300 tabular-nums">
+									{countdown}
+								</span>
+							</div>
+						) : null}
+
 						{/* Spoiler-free share text preview */}
 						<pre className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-slate-200">
 							{shareText}
@@ -834,100 +1055,259 @@ export const App = () => {
 									onClick={() => {
 										void handleCopyOrShareSheet();
 									}}
-									className="min-h-10 cursor-pointer rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:border-sky-400/50"
+									className="min-h-11 cursor-pointer rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:border-sky-400/50"
 								>
 									Copy / Share Card
 								</button>
 								<button
 									type="button"
 									onClick={handleReplayPractice}
-									className="min-h-10 cursor-pointer rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:border-slate-500"
+									className="min-h-11 cursor-pointer rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 hover:border-slate-500"
 								>
 									Replay Practice
 								</button>
 							</div>
 
-							<button
-								type="button"
-								onClick={() => {
-									setShowSummary(false);
-									setShowStudio(true);
-								}}
-								className="min-h-10 w-full cursor-pointer rounded-xl border border-sky-500/40 bg-sky-500/15 px-3 py-2 text-xs font-bold text-sky-200 hover:bg-sky-500/25"
-							>
-								+ Build & Post Your Own Puzzle
-							</button>
+							<div className="grid grid-cols-2 gap-2">
+								<button
+									type="button"
+									onClick={() => {
+										setShowSummary(false);
+										setStudioTab("browse");
+										setShowStudio(true);
+									}}
+									className="min-h-11 cursor-pointer rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs font-bold text-slate-200 hover:border-sky-400/50"
+								>
+									Community Puzzles ({communityPuzzles.length})
+								</button>
+								<button
+									type="button"
+									onClick={() => {
+										setShowSummary(false);
+										setStudioTab("build");
+										setShowStudio(true);
+									}}
+									className="min-h-11 cursor-pointer rounded-xl border border-sky-500/40 bg-sky-500/15 px-3 py-2 text-xs font-bold text-sky-200 hover:bg-sky-500/25"
+								>
+									+ Build & Post Puzzle
+								</button>
+							</div>
 						</div>
 					</div>
 				) : null}
 			</ModalDialog>
 
-			{/* Leaderboard Modal */}
+			{/* 2-Tab Leaderboard & All-Time Hall of Fame Modal */}
 			<ModalDialog
 				open={showLeaderboard}
-				title={`r/${subredditName} Leaderboard`}
+				title={`r/${subredditName} Rankings`}
 				onClose={() => setShowLeaderboard(false)}
 			>
-				<div className="flex flex-col gap-2">
-					{leaderboard.length === 0 ? (
-						<p className="py-6 text-center text-xs text-slate-400">
-							No solvers yet today — complete the 3 stages to claim #1!
-						</p>
+				<div className="flex flex-col gap-3">
+					<div className="grid grid-cols-2 gap-1.5 rounded-xl border border-slate-800 bg-slate-950/90 p-1">
+						<button
+							type="button"
+							onClick={() => setLbTab("daily")}
+							className={`min-h-10 cursor-pointer rounded-lg px-3 py-1.5 text-xs font-bold ${
+								lbTab === "daily"
+									? "bg-amber-400 text-slate-950"
+									: "text-slate-300 hover:bg-slate-900"
+							}`}
+						>
+							{mode === "custom" ? "This Puzzle" : `Day #${dayNumber}`}
+						</button>
+						<button
+							type="button"
+							onClick={() => setLbTab("hof")}
+							className={`min-h-10 cursor-pointer rounded-lg px-3 py-1.5 text-xs font-bold ${
+								lbTab === "hof"
+									? "bg-amber-400 text-slate-950"
+									: "text-slate-300 hover:bg-slate-900"
+							}`}
+						>
+							All-Time Hall of Fame
+						</button>
+					</div>
+
+					{lbTab === "daily" ? (
+						<div className="flex flex-col gap-2">
+							{leaderboard.length === 0 ? (
+								<p className="py-6 text-center text-xs text-slate-400">
+									No solvers yet — complete the beam to claim #1!
+								</p>
+							) : (
+								leaderboard.map((entry) => {
+									const isMe = entry.username === profile.username;
+									return (
+										<div
+											key={entry.username}
+											className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${
+												isMe
+													? "border-sky-400/50 bg-sky-950/45"
+													: "border-slate-800 bg-slate-900/70"
+											}`}
+										>
+											<div className="flex min-w-0 items-center gap-2.5">
+												<span className="w-6 text-center text-xs font-black text-amber-300 tabular-nums">
+													#{entry.rank}
+												</span>
+												{entry.snoovatarUrl ? (
+													<img
+														src={entry.snoovatarUrl}
+														alt=""
+														className="h-7 w-7 rounded-full border border-slate-700 bg-slate-800 object-cover"
+													/>
+												) : (
+													<div className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-[11px] font-bold text-sky-300">
+														{entry.username.slice(0, 1).toUpperCase()}
+													</div>
+												)}
+												<div className="min-w-0">
+													<div className="truncate text-xs font-bold text-slate-100">
+														u/{entry.username}
+													</div>
+													<div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+														{entry.parMaster ? (
+															<span className="font-bold text-emerald-300">
+																★ PAR
+															</span>
+														) : null}
+														{entry.streak > 0 ? (
+															<span>🔥 {entry.streak}d</span>
+														) : null}
+													</div>
+												</div>
+											</div>
+											<div className="shrink-0 text-right tabular-nums">
+												<div className="text-xs font-black text-white">
+													{entry.totalTaps} taps
+												</div>
+												<div className="text-[10px] text-slate-400">
+													{formatDuration(entry.elapsedSec)}
+												</div>
+											</div>
+										</div>
+									);
+								})
+							)}
+						</div>
 					) : (
-						leaderboard.map((entry) => {
-							const isMe = entry.username === profile.username;
+						<div className="flex flex-col gap-2">
+							{hallOfFame.length === 0 ? (
+								<p className="py-6 text-center text-xs text-slate-400">
+									Complete daily beams to climb the r/{subredditName} Hall of
+									Fame!
+								</p>
+							) : (
+								hallOfFame.map((entry) => {
+									const isMe = entry.username === profile.username;
+									return (
+										<div
+											key={entry.username}
+											className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${
+												isMe
+													? "border-sky-400/50 bg-sky-950/45"
+													: "border-slate-800 bg-slate-900/70"
+											}`}
+										>
+											<div className="flex min-w-0 items-center gap-2.5">
+												<span className="w-6 text-center text-xs font-black text-amber-300 tabular-nums">
+													#{entry.rank}
+												</span>
+												{entry.snoovatarUrl ? (
+													<img
+														src={entry.snoovatarUrl}
+														alt=""
+														className="h-7 w-7 rounded-full border border-slate-700 bg-slate-800 object-cover"
+													/>
+												) : (
+													<div className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-[11px] font-bold text-sky-300">
+														{entry.username.slice(0, 1).toUpperCase()}
+													</div>
+												)}
+												<div className="min-w-0">
+													<div className="truncate text-xs font-bold text-slate-100">
+														u/{entry.username}
+													</div>
+													<div className="text-[10px] text-slate-400">
+														Best streak 🔥 {entry.bestStreak}d
+													</div>
+												</div>
+											</div>
+											<div className="shrink-0 text-right tabular-nums">
+												<div className="text-xs font-black text-emerald-300">
+													★ {entry.parMasterCount} Par
+												</div>
+												<div className="text-[10px] text-slate-400">
+													{entry.totalSolved} solved
+												</div>
+											</div>
+										</div>
+									);
+								})
+							)}
+						</div>
+					)}
+				</div>
+			</ModalDialog>
+
+			{/* Daily Archive Calendar Modal */}
+			<ModalDialog
+				open={showArchive}
+				title="Daily Beam Archive"
+				onClose={() => setShowArchive(false)}
+			>
+				<div className="flex flex-col gap-3">
+					<p className="text-xs text-slate-400">
+						Play any past UTC daily challenge. Your personal streak & archive
+						badges sync across Reddit.
+					</p>
+					<div className="grid grid-cols-2 gap-2">
+						{archiveDays.map((item) => {
+							const status = solvedDates[item.dateKey];
+							const isSelected = item.dateKey === selectedDate;
 							return (
-								<div
-									key={entry.username}
-									className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${
-										isMe
-											? "border-sky-400/50 bg-sky-950/45"
-											: "border-slate-800 bg-slate-900/70"
+								<button
+									key={item.dateKey}
+									type="button"
+									onClick={() => handleSelectArchiveDate(item.dateKey)}
+									className={`flex min-h-14 cursor-pointer items-center justify-between rounded-xl border px-3 py-2 text-left ${
+										isSelected
+											? "border-sky-400 bg-sky-950/55"
+											: status === "par"
+												? "border-amber-400/40 bg-amber-950/25 hover:border-amber-300"
+												: status === "solved"
+													? "border-emerald-500/35 bg-emerald-950/25 hover:border-emerald-400"
+													: "border-slate-800 bg-slate-900/75 hover:border-slate-600"
 									}`}
 								>
-									<div className="flex min-w-0 items-center gap-2.5">
-										<span className="w-6 text-center text-xs font-black text-amber-300 tabular-nums">
-											#{entry.rank}
-										</span>
-										{entry.snoovatarUrl ? (
-											<img
-												src={entry.snoovatarUrl}
-												alt=""
-												className="h-7 w-7 rounded-full border border-slate-700 bg-slate-800 object-cover"
-											/>
-										) : (
-											<div className="flex h-7 w-7 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-[11px] font-bold text-sky-300">
-												{entry.username.slice(0, 1).toUpperCase()}
-											</div>
-										)}
-										<div className="min-w-0">
-											<div className="truncate text-xs font-bold text-slate-100">
-												u/{entry.username}
-											</div>
-											<div className="flex items-center gap-1.5 text-[10px] text-slate-400">
-												{entry.parMaster ? (
-													<span className="font-bold text-emerald-300">
-														★ PAR
-													</span>
-												) : null}
-												{entry.streak > 0 ? (
-													<span>🔥 {entry.streak}d</span>
-												) : null}
-											</div>
-										</div>
-									</div>
-									<div className="shrink-0 text-right tabular-nums">
+									<div>
 										<div className="text-xs font-black text-white">
-											{entry.totalTaps} taps
+											Day #{item.dayNumber}
 										</div>
-										<div className="text-[10px] text-slate-400">
-											{formatDuration(entry.elapsedSec)}
+										<div className="text-[10px] text-slate-400 tabular-nums">
+											{item.dateKey}
 										</div>
 									</div>
-								</div>
+									<span
+										className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+											status === "par"
+												? "bg-amber-400/20 text-amber-300"
+												: status === "solved"
+													? "bg-emerald-500/20 text-emerald-300"
+													: "bg-slate-800 text-slate-400"
+										}`}
+									>
+										{status === "par"
+											? "★ PAR"
+											: status === "solved"
+												? "✓ Done"
+												: "Play"}
+									</span>
+								</button>
 							);
-						})
-					)}
+						})}
+					</div>
 				</div>
 			</ModalDialog>
 
@@ -940,8 +1320,8 @@ export const App = () => {
 				<div className="flex flex-col gap-3 text-xs leading-relaxed text-slate-300">
 					<p>
 						Ignite every <strong className="text-emerald-300">Crystal</strong>{" "}
-						on the optical bench simultaneously in as few taps as possible.
-						Every UTC midnight unlocks 3 new provably solvable stages.
+						simultaneously in as few taps as possible. A fresh 3-stage pack
+						auto-posts every UTC midnight.
 					</p>
 					<ul className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-950/75 p-3">
 						<li>
@@ -966,20 +1346,27 @@ export const App = () => {
 						</li>
 						<li>
 							<strong className="text-emerald-300">Crystals:</strong> Beams pass
-							right through crystals and light them up. Hit all crystals to
-							clear the stage!
+							right through crystals and ignite them. Light all crystals to
+							clear!
 						</li>
 					</ul>
 					<p className="text-[11px] text-slate-400">
-						Beat all 3 stages at or under <strong>Par</strong> without hints to
-						earn the <strong className="text-sky-300">PRISM Par Master</strong>{" "}
-						badge & subreddit flair.
+						Keyboard: Arrow keys + Enter/Space to rotate · <strong>Z</strong>{" "}
+						Undo · <strong>R</strong> Reset · <strong>H</strong> Hint ·{" "}
+						<strong>M</strong> Mute.
 					</p>
 				</div>
 			</ModalDialog>
 
-			{/* Community Puzzle Studio Modal */}
-			<StudioModal open={showStudio} onClose={() => setShowStudio(false)} />
+			{/* Community Puzzle Studio & Feed Modal */}
+			<StudioModal
+				key={studioTab}
+				open={showStudio}
+				onClose={() => setShowStudio(false)}
+				communityPuzzles={communityPuzzles}
+				studioEnabled={studioEnabled}
+				initialTab={studioTab}
+			/>
 		</div>
 	);
 };

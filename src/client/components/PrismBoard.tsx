@@ -14,6 +14,8 @@ type PrismBoardProps = {
 	trace: TraceResult;
 	onCellTap?: (r: number, c: number) => void;
 	hintCellKey?: string | null;
+	onboardCellKey?: string | null;
+	burstKeys?: string[];
 	interactive?: boolean;
 	compact?: boolean;
 	studioMode?: boolean;
@@ -38,6 +40,8 @@ export const PrismBoard = ({
 	trace,
 	onCellTap,
 	hintCellKey = null,
+	onboardCellKey = null,
+	burstKeys = [],
 	interactive = true,
 	compact = false,
 	studioMode = false,
@@ -81,11 +85,11 @@ export const PrismBoard = ({
 				compact ? "max-w-[230px]" : "max-w-[380px]"
 			}`}
 		>
-			{/* Subtle solved border aura */}
+			{/* Solved emerald border aura */}
 			{trace.solved && !studioMode ? (
 				<div
 					aria-hidden="true"
-					className="pointer-events-none absolute -inset-px rounded-2xl border-2 border-emerald-400/75 shadow-[0_0_32px_rgba(52,211,153,0.35)]"
+					className="pointer-events-none absolute -inset-px rounded-2xl border-2 border-emerald-400/80 shadow-[0_0_36px_rgba(52,211,153,0.42)]"
 				/>
 			) : null}
 
@@ -108,6 +112,7 @@ export const PrismBoard = ({
 						const isTappable =
 							interactive && (studioMode || isMirror || isSplitter);
 						const isHinted = hintCellKey === k;
+						const isOnboard = !isHinted && onboardCellKey === k;
 						const isLitOptic = litOptics.has(k);
 						const isLitCrystal = litCrystals.has(k);
 						const orient: MirrorOrientation =
@@ -136,7 +141,7 @@ export const PrismBoard = ({
 								aria-label={ariaLabel}
 								className={`relative flex items-center justify-center border border-slate-800/70 transition-colors ${
 									isTappable
-										? "cursor-pointer hover:bg-sky-500/10"
+										? "cursor-pointer hover:bg-sky-500/12"
 										: "cursor-default"
 								} ${
 									isMirror || isSplitter
@@ -146,14 +151,20 @@ export const PrismBoard = ({
 										: cell?.kind === "block"
 											? "bg-slate-950"
 											: "bg-transparent"
-								} ${isHinted ? "hint-tile-anim z-20 rounded-lg" : ""}`}
+								} ${
+									isHinted
+										? "hint-tile-anim z-20 rounded-lg"
+										: isOnboard
+											? "onboard-tile-anim z-20 rounded-lg"
+											: ""
+								}`}
 							>
 								{/* Tappable optic corner notches */}
 								{(isMirror || isSplitter) && interactive && !compact ? (
 									<span
 										aria-hidden="true"
 										className={`pointer-events-none absolute inset-1 rounded-md border ${
-											isLitOptic ? "border-sky-400/45" : "border-slate-600/35"
+											isLitOptic ? "border-sky-400/50" : "border-slate-600/35"
 										}`}
 									/>
 								) : null}
@@ -170,7 +181,7 @@ export const PrismBoard = ({
 								{cell?.kind === "emitter" ? (
 									<div
 										aria-hidden="true"
-										className="relative z-20 flex h-[70%] w-[70%] items-center justify-center rounded-full border border-amber-300/80 bg-gradient-to-br from-amber-300 via-amber-500 to-orange-600 shadow-[0_0_20px_rgba(251,191,36,0.75)]"
+										className="relative z-20 flex h-[70%] w-[70%] items-center justify-center rounded-full border border-amber-300/85 bg-gradient-to-br from-amber-300 via-amber-500 to-orange-600 shadow-[0_0_22px_rgba(251,191,36,0.8)]"
 										style={{
 											transform: `rotate(${DIR_ROTATION_DEG[cell.dir ?? 1]}deg)`,
 										}}
@@ -201,8 +212,8 @@ export const PrismBoard = ({
 												<circle
 													cx="20"
 													cy="20"
-													r="17"
-													fill="rgba(52, 211, 153, 0.28)"
+													r="18"
+													fill="rgba(52, 211, 153, 0.34)"
 												/>
 											) : null}
 											<polygon
@@ -214,7 +225,7 @@ export const PrismBoard = ({
 											<polygon
 												points="20,9 27,20 20,31 13,20"
 												fill={isLitCrystal ? "#ecfdf5" : "#334155"}
-												opacity={isLitCrystal ? 0.95 : 0.7}
+												opacity={isLitCrystal ? 0.96 : 0.7}
 											/>
 										</svg>
 									</div>
@@ -233,7 +244,7 @@ export const PrismBoard = ({
 										<div
 											className={`h-[14%] w-[78%] rounded-full border transition-all ${
 												isLitOptic
-													? "border-sky-200 bg-gradient-to-r from-sky-300 via-white to-sky-300 shadow-[0_0_16px_rgba(56,189,248,0.95)]"
+													? "border-sky-100 bg-gradient-to-r from-sky-300 via-white to-sky-300 shadow-[0_0_18px_rgba(56,189,248,0.95)]"
 													: "border-slate-400/80 bg-gradient-to-r from-slate-500 via-slate-200 to-slate-500"
 											}`}
 										/>
@@ -246,17 +257,15 @@ export const PrismBoard = ({
 										aria-hidden="true"
 										className="relative z-20 flex h-full w-full items-center justify-center"
 									>
-										{/* Faceted diamond shell */}
 										<div
 											className={`h-[56%] w-[56%] rotate-45 rounded-sm border-2 transition-colors ${
 												isLitOptic
-													? "border-amber-300 bg-amber-400/25 shadow-[0_0_18px_rgba(251,191,36,0.8)]"
+													? "border-amber-200 bg-amber-400/30 shadow-[0_0_20px_rgba(251,191,36,0.9)]"
 													: "border-amber-500/55 bg-amber-500/10"
 											}`}
 										/>
-										{/* Dichroic internal plane */}
 										<div
-											className="pointer-events-none absolute h-[11%] w-[70%] rounded-full bg-amber-200 shadow-[0_0_8px_rgba(251,191,36,0.9)] transition-transform duration-150 ease-out"
+											className="pointer-events-none absolute h-[11%] w-[70%] rounded-full bg-amber-200 shadow-[0_0_10px_rgba(251,191,36,0.95)] transition-transform duration-150 ease-out"
 											style={{
 												transform:
 													orient === 0 ? "rotate(-45deg)" : "rotate(45deg)",
@@ -269,20 +278,28 @@ export const PrismBoard = ({
 								{cell?.kind === "portalA" || cell?.kind === "portalB" ? (
 									<div
 										aria-hidden="true"
-										className="relative z-20 flex h-[68%] w-[68%] items-center justify-center"
+										className="relative z-20 flex h-[70%] w-[70%] items-center justify-center"
 									>
 										<div
-											className={`portal-spin-anim absolute inset-0 rounded-full border-2 border-dashed ${
+											className={`${
+												trace.portalActive
+													? "portal-active-anim"
+													: "portal-spin-anim"
+											} absolute inset-0 rounded-full border-2 border-dashed ${
 												cell.kind === "portalA"
-													? "border-fuchsia-400 shadow-[0_0_16px_rgba(232,121,249,0.75)]"
-													: "border-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.75)]"
+													? trace.portalActive
+														? "border-fuchsia-300 shadow-[0_0_24px_rgba(232,121,249,0.95)]"
+														: "border-fuchsia-400/80 shadow-[0_0_14px_rgba(232,121,249,0.6)]"
+													: trace.portalActive
+														? "border-cyan-200 shadow-[0_0_24px_rgba(34,211,238,0.95)]"
+														: "border-cyan-300/80 shadow-[0_0_14px_rgba(34,211,238,0.6)]"
 											}`}
 										/>
 										<div
-											className={`flex h-[58%] w-[58%] items-center justify-center rounded-full text-[10px] font-bold ${
+											className={`flex h-[58%] w-[58%] items-center justify-center rounded-full text-[10px] font-black ${
 												cell.kind === "portalA"
-													? "bg-fuchsia-500/30 text-fuchsia-200"
-													: "bg-cyan-500/30 text-cyan-100"
+													? "bg-fuchsia-500/35 text-fuchsia-100"
+													: "bg-cyan-500/35 text-cyan-100"
 											}`}
 										>
 											{cell.kind === "portalA" ? "A" : "B"}
@@ -290,11 +307,21 @@ export const PrismBoard = ({
 									</div>
 								) : null}
 
-								{/* Hint label */}
+								{/* Smart Hint badge */}
 								{isHinted && !compact ? (
 									<span
 										aria-hidden="true"
 										className="pointer-events-none absolute -top-1 right-0.5 z-30 rounded bg-amber-400 px-1 py-0.5 text-[8px] font-black tracking-wider text-slate-950"
+									>
+										HINT
+									</span>
+								) : null}
+
+								{/* Contextual First-Tap Onboarding badge */}
+								{isOnboard && !compact ? (
+									<span
+										aria-hidden="true"
+										className="pointer-events-none absolute -top-1 right-0.5 z-30 rounded bg-sky-400 px-1 py-0.5 text-[8px] font-black tracking-wider text-slate-950"
 									>
 										TAP
 									</span>
@@ -304,7 +331,7 @@ export const PrismBoard = ({
 					})}
 				</div>
 
-				{/* SVG Live Laser Overlay */}
+				{/* SVG Live Laser + Impact Flare + Photon Burst Overlay */}
 				<svg
 					aria-hidden="true"
 					viewBox={`0 0 ${viewBoxSize} ${viewBoxSize}`}
@@ -337,7 +364,7 @@ export const PrismBoard = ({
 									stroke={stroke}
 									strokeWidth={14}
 									strokeLinecap="round"
-									opacity={0.28}
+									opacity={0.3}
 									filter={`url(#${filterId})`}
 								/>
 								<line
@@ -348,7 +375,7 @@ export const PrismBoard = ({
 									stroke={stroke}
 									strokeWidth={5.5}
 									strokeLinecap="round"
-									opacity={0.95}
+									opacity={0.96}
 								/>
 								<line
 									x1={x1}
@@ -360,9 +387,48 @@ export const PrismBoard = ({
 									strokeLinecap="round"
 									strokeDasharray="10 14"
 									className="beam-flow-anim"
-									opacity={0.9}
+									opacity={0.92}
 								/>
 							</g>
+						);
+					})}
+
+					{/* Luminous bounce flare nodes on lit mirrors & splitters */}
+					{trace.litOptics.map((k) => {
+						const parts = k.split(",");
+						const r = Number.parseInt(parts[0] ?? "0", 10);
+						const c = Number.parseInt(parts[1] ?? "0", 10);
+						const cell = cellMap.get(k);
+						const cx = c * 100 + 50;
+						const cy = r * 100 + 50;
+						const col = cell?.kind === "splitter" ? "#fbbf24" : "#7dd3fc";
+						return (
+							<g key={`flare-${k}`}>
+								<circle cx={cx} cy={cy} r={14} fill={col} opacity={0.28} />
+								<circle cx={cx} cy={cy} r={5} fill="#ffffff" opacity={0.92} />
+							</g>
+						);
+					})}
+
+					{/* Crystal ignition photon shockwave rings */}
+					{burstKeys.map((token) => {
+						const [coord] = token.split("@");
+						const parts = (coord ?? "0,0").split(",");
+						const r = Number.parseInt(parts[0] ?? "0", 10);
+						const c = Number.parseInt(parts[1] ?? "0", 10);
+						const cx = c * 100 + 50;
+						const cy = r * 100 + 50;
+						return (
+							<circle
+								key={`burst-${token}`}
+								cx={cx}
+								cy={cy}
+								r={34}
+								fill="none"
+								stroke="#6ee7b7"
+								strokeWidth={5}
+								className="spark-ring-anim"
+							/>
 						);
 					})}
 				</svg>

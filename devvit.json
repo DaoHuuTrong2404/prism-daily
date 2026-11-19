@@ -1,15 +1,27 @@
 {
 	"$schema": "https://developers.reddit.com/schema/config-file.v1.json",
 	"name": "prism-daily",
+	"permissions": {
+		"redis": true,
+		"reddit": true
+	},
 	"post": {
 		"dir": "dist/client",
 		"entrypoints": {
 			"default": {
-				"inline": true,
-				"entry": "splash.html"
+				"entry": "splash.html",
+				"height": "tall",
+				"styles": {
+					"backgroundColor": "#070a10ff",
+					"backgroundColorDark": "#070a10ff"
+				}
 			},
 			"game": {
-				"entry": "game.html"
+				"entry": "game.html",
+				"styles": {
+					"backgroundColor": "#070a10ff",
+					"backgroundColorDark": "#070a10ff"
+				}
 			}
 		}
 	},
@@ -40,6 +52,39 @@
 	},
 	"triggers": {
 		"onAppInstall": "/internal/triggers/on-app-install"
+	},
+	"scheduler": {
+		"tasks": {
+			"daily-prism-post": {
+				"endpoint": "/internal/scheduler/daily-post",
+				"cron": "0 0 * * *"
+			}
+		}
+	},
+	"settings": {
+		"subreddit": {
+			"autoPostDaily": {
+				"type": "boolean",
+				"label": "Auto-post Daily Prism at 00:00 UTC",
+				"helpText": "Automatically publish a fresh playable PRISM DAILY puzzle post every midnight UTC.",
+				"defaultValue": true
+			},
+			"awardUserFlairs": {
+				"type": "boolean",
+				"label": "Award Par Master & Streak User Flairs",
+				"helpText": "Automatically grant community flair badges when players clear at Par or reach a 3+ day streak.",
+				"defaultValue": true
+			},
+			"allowCommunityStudio": {
+				"type": "boolean",
+				"label": "Enable Community Puzzle Studio (UGC)",
+				"helpText": "Allow members to design verified solvable puzzles and publish them as playable posts in this subreddit.",
+				"defaultValue": true
+			}
+		}
+	},
+	"marketingAssets": {
+		"icon": "assets/icon.png"
 	},
 	"scripts": {
 		"dev": "vite build --watch",
