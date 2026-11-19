@@ -32,6 +32,7 @@ import {
 	readPostMeta,
 	type StoredCommunityPuzzle,
 } from "../core/post";
+import { ensureShowcaseSeeded } from "../core/seed";
 
 export const api = new Hono();
 
@@ -293,6 +294,7 @@ api.get("/splash", async (c) => {
 	}
 
 	try {
+		await ensureShowcaseSeeded(postId);
 		const [meta, usernameRaw] = await Promise.all([
 			readPostMeta(postId),
 			reddit.getCurrentUsername(),
@@ -353,6 +355,7 @@ api.get("/init", async (c) => {
 	}
 
 	try {
+		await ensureShowcaseSeeded(postId);
 		const requestedDate = c.req.query("date");
 		const [meta, usernameRaw, studioEnabled] = await Promise.all([
 			readPostMeta(postId),
