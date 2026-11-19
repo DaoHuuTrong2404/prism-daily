@@ -26,4 +26,13 @@ Great Reddit daily games like `r/hotandcold`, `r/pocketgrids`, and `r/pixelary` 
 ## How We Built It
 - **Platform:** Devvit Web (`@devvit/web`, `@devvit/start`), Hono server, Devvit Redis, and Reddit API (`submitCustomPost`, `submitComment`, `getSnoovatarUrl`, `setUserFlair`).
 - **Frontend:** React 19, TypeScript, Tailwind CSS 4, custom SVG real-time raytracer with animated photon flow, procedural WebAudio pentatonic chimes, native accessible `<dialog>` modals, and full keyboard arrow-key navigation.
+## Verification
 - **Verification:** Pure deterministic optics engine (`src/shared/prismEngine.ts`) unit-tested across 100 consecutive calendar dates (300 stages) to guarantee zero unsolvable puzzles and zero infinite beam loops.
+
+## Submitted Live URLs (Verified 2026-11-19)
+- **Devpost Submission:** https://devpost.com/software/prism-daily
+- **App Listing URL (Devvit v0.0.1, private upload — not submitted for publish):** https://developers.reddit.com/apps/prism-daily
+- **Public Subreddit:** https://www.reddit.com/r/PrismDailyGame/
+- **Playable Demo Post:** https://www.reddit.com/r/PrismDailyGame/comments/1y039g5/prism_daily_9_bend_the_beam_20261119/
+- **GitHub Repository:** https://github.com/DaoHuuTrong2404/prism-daily
+- **Optional Feedback Survey (5 × $200 Feedback Awards):** https://forms.gle/dW45UgK6SctevE756
