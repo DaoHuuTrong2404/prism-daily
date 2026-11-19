@@ -1,0 +1,48 @@
+{
+	"$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+	"name": "prism-daily",
+	"post": {
+		"dir": "dist/client",
+		"entrypoints": {
+			"default": {
+				"inline": true,
+				"entry": "splash.html"
+			},
+			"game": {
+				"entry": "game.html"
+			}
+		}
+	},
+	"server": {
+		"dir": "dist/server",
+		"entry": "index.cjs"
+	},
+	"menu": {
+		"items": [
+			{
+				"label": "Post Today's Prism Daily",
+				"description": "Create today's playable Prism Daily optical puzzle post",
+				"location": "subreddit",
+				"forUserType": "moderator",
+				"endpoint": "/internal/menu/post-create"
+			},
+			{
+				"label": "Post Prism Daily for Date",
+				"description": "Create a Prism Daily puzzle post for a specific date",
+				"location": "subreddit",
+				"forUserType": "moderator",
+				"endpoint": "/internal/menu/date-form"
+			}
+		]
+	},
+	"forms": {
+		"dateForm": "/internal/form/date-submit"
+	},
+	"triggers": {
+		"onAppInstall": "/internal/triggers/on-app-install"
+	},
+	"scripts": {
+		"dev": "vite build --watch",
+		"build": "vite build"
+	}
+}
